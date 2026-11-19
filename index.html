@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ad Player</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  #stage { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  #stage img, #stage video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #msg { position: absolute; bottom: 20px; left: 20px; color: #888; font: 24px sans-serif; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="msg">Loading ads...</div>
+<script>
+/* Plain ES5 on purpose: the 2018 Samsung Tizen 4.0 browser has an old engine. */
+(function () {
+  var DEFAULT_SECONDS = 10;          // how long each image shows unless the filename says otherwise (e.g. sale_15s.jpg)
+  var REFRESH_MINUTES = 10;          // how often to look for new or removed ads
+  var RELOAD_HOURS = 6;              // full page reload, keeps the old browser from leaking memory
+  var FOLDER = 'ads';
+  var IMG = /\.(jpe?g|png|gif|webp)$/i;
+  var VID = /\.(mp4|webm|m4v)$/i;
+
+  var stage = document.getElementById('stage');
+  var msg = document.getElementById('msg');
+  var list = [];
+  var index = -1;
+  var timer = null;
+
+  // Works out "owner/repo" from a GitHub Pages address like https://owner.github.io/repo/
+  function repoPath() {
+    var host = location.hostname;
+    var m = host.match(/^([^.]+)\.github\.io$/i);
+    if (!m) return null;
+    var seg = location.pathname.split('/')[1];
+    return m[1] + '/' + (seg ? seg : host);
+  }
+
+  function secondsFor(name) {
+    var m = name.match(/_(\d+)s\.[a-z0-9]+$/i);
+    return m ? parseInt(m[1], 10) : DEFAULT_SECONDS;
+  }
+
+  function parseNames(names) {
+    var out = [];
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i];
+      if (IMG.test(n) || VID.test(n)) out.push(n);
+    }
+    out.sort();
+    return out;
+  }
+
+  function get(url, ok, fail) {
+    var x = new XMLHttpRequest();
+    x.open('GET', url + (url.indexOf('?') < 0 ? '?' : '&') + 't=' + new Date().getTime(), true);
+    x.timeout = 20000;
+    x.onload = function () { if (x.status >= 200 && x.status < 300) ok(x.responseText); else fail(); };
+    x.onerror = fail;
+    x.ontimeout = fail;
+    x.send();
+  }
+
+  function setList(names) {
+    if (!names.length) return;
+    list = names;
+    try { localStorage.setItem('adList', JSON.stringify(names)); } catch (e) {}
+  }
+
+  // Ask GitHub which files are in the ads folder. Falls back to ads.txt (one filename per line), then to the last known list.
+  function refresh(done) {
+    var repo = repoPath();
+    function fromTxt() {
+      get(FOLDER + '/ads.txt', function (t) {
+        setList(parseNames(t.split(/\r?\n/).map(function (s) { return s.replace(/^\s+|\s+$/g, ''); })));
+        done();
+      }, done);
+    }
+    if (!repo) { fromTxt(); return; }
+    get('https://api.github.com/repos/' + repo + '/contents/' + FOLDER, function (t) {
+      var names = [];
+      try {
+        var items = JSON.parse(t);
+        for (var i = 0; i < items.length; i++) if (items[i].type === 'file') names.push(items[i].name);
+      } catch (e) {}
+      setList(parseNames(names));
+      done();
+    }, fromTxt);
+  }
+
+  function next() {
+    clearTimeout(timer);
+    if (!list.length) {
+      msg.style.display = 'block';
+      msg.innerHTML = 'No ads found. Upload images or videos to the "ads" folder.';
+      timer = setTimeout(next, 30000);
+      return;
+    }
+    msg.style.display = 'none';
+    index = (index + 1) % list.length;
+    var name = list[index];
+    var src = FOLDER + '/' + encodeURIComponent(name);
+    var el;
+
+    if (VID.test(name)) {
+      el = document.createElement('video');
+      el.muted = true;
+      el.setAttribute('muted', '');
+      el.setAttribute('playsinline', '');
+      el.autoplay = true;
+      el.onended = next;
+      el.onerror = function () { timer = setTimeout(next, 1000); };
+      el.src = src;
+      // Safety net if a video stalls: move on after 10 minutes.
+      timer = setTimeout(next, 600000);
+    } else {
+      el = document.createElement('img');
+      el.onerror = function () { clearTimeout(timer); timer = setTimeout(next, 1000); };
+      el.src = src;
+      timer = setTimeout(next, secondsFor(name) * 1000);
+    }
+
+    // Swap: add the new one, then remove the old ones (stops old videos so they free memory).
+    stage.appendChild(el);
+    while (stage.childNodes.length > 1) {
+      var old = stage.firstChild;
+      if (old.tagName === 'VIDEO') { try { old.pause(); old.removeAttribute('src'); old.load(); } catch (e) {} }
+      stage.removeChild(old);
+    }
+    if (el.tagName === 'VIDEO' && el.play) { try { el.play(); } catch (e) {} }
+  }
+
+  try { list = JSON.parse(localStorage.getItem('adList')) || []; } catch (e) { list = []; }
+  refresh(next);
+  setInterval(function () { refresh(function () {}); }, REFRESH_MINUTES * 60000);
+  setTimeout(function () { location.reload(); }, RELOAD_HOURS * 3600000);
+
+  // Any remote button press tries to go full screen (the browser may need the TV's own full-screen option instead).
+  document.onkeydown = function () {
+    var d = document.documentElement;
+    var f = d.requestFullscreen || d.webkitRequestFullscreen || d.webkitRequestFullScreen;
+    if (f) { try { f.call(d); } catch (e) {} }
+  };
+})();
+</script>
+</body>
+</html>
